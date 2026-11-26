@@ -14,7 +14,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   # Per-ref: a build started from a feature branch must not cancel or queue
@@ -28,7 +27,6 @@ jobs:
     # NOTE: step-level permissions are ignored by GHA; job-level write covers the two push steps + release step.
     permissions:
       contents: write
-      issues: write
     steps:
       - name: Checkout main (full history)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -97,6 +95,11 @@ jobs:
 
             if [ "$REAL_CONFLICT" = true ]; then
               echo "conflict=true" >> "$GITHUB_OUTPUT"
+              {
+                echo "conflict_files<<EOF_CONFLICT_FILES"
+                printf '%s\n' "$CONFLICTED"
+                echo "EOF_CONFLICT_FILES"
+              } >> "$GITHUB_OUTPUT"
               git merge --abort
             else
               for f in $CONFLICTED; do
@@ -108,20 +111,23 @@ jobs:
             fi
           fi
 
-      - name: Open issue on conflict
+      - name: Report upstream sync conflict
         if: steps.merge.outputs.conflict == 'true'
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        with:
-          script: |
-            const TITLE_PREFIX = "Upstream sync conflict";
-            const open = await github.rest.issues.listForRepo({owner: context.repo.owner, repo: context.repo.repo, state: "open"});
-            if (open.data.some(i => i.title.startsWith(TITLE_PREFIX))) { console.log("Open conflict issue already exists, skipping."); return; }
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `Upstream sync conflict - ${new Date().toISOString().slice(0,10)}`,
-              body: "Automatic merge from upstream BRENE failed. Resolve manually:\n```\ngit fetch upstream main\ngit merge upstream/main\n# resolve conflicts\ngit add .\ngit commit\ngit push\n```"
-            })
+        env:
+          CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
+        run: |
+          {
+            echo "## ❌ Upstream sync conflict"
+            echo ""
+            echo "Automatic merge from upstream BRENE was aborted."
+            echo ""
+            echo "### Conflicting files"
+            echo '\`\`\`text'
+            printf '%s\\n' "$CONFLICT_FILES"
+            echo '\`\`\`'
+            echo ""
+            echo "Build and release were skipped."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check for new upstream commits
         if: inputs.sync == true && steps.merge.outputs.conflict == 'false'
@@ -138,12 +144,22 @@ jobs:
           # config_sync_device_props is retired: customize.sh deletes it from the live
           # config and the boot scripts must never pin config_spoof_system_properties
           # again (that pin is what made the Spoof system properties toggle stuck on).
-          for f in module/post-fs-data.sh module/boot-completed.sh; do
+          # Upstream moved late boot work into post-boot.sh. Keep compatibility
+          # with older layouts while validating the active dispatch locations.
+          BOOT_FILES=(module/post-fs-data.sh)
+          if [ -f module/post-boot.sh ]; then
+            BOOT_FILES+=(module/post-boot.sh)
+          else
+            BOOT_FILES+=(module/boot-completed.sh)
+          fi
+          for f in "${BOOT_FILES[@]}"; do
             if grep -q 'config_sync_device_props' "$f"; then
-              echo "::error::retired config_sync_device_props shim came back in $f" >&2; exit 1
+              echo "::error::retired config_sync_device_props shim came back in $f" >&2
+              exit 1
             fi
             if ! grep -q 'config_spoof_system_properties' "$f"; then
-              echo "::error::config_spoof_system_properties dispatch missing in $f" >&2; exit 1
+              echo "::error::config_spoof_system_properties dispatch missing in $f" >&2
+              exit 1
             fi
           done
           if ! grep -q '^config_spoof_system_properties=1' module/config.sh; then
