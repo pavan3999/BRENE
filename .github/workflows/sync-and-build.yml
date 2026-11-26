@@ -122,9 +122,9 @@ jobs:
             echo "Automatic merge from upstream BRENE was aborted."
             echo ""
             echo "### Conflicting files"
-            echo '\`\`\`text'
-            printf '%s\\n' "$CONFLICT_FILES"
-            echo '\`\`\`'
+            echo '```text'
+            printf '%s\n' "$CONFLICT_FILES"
+            echo '```'
             echo ""
             echo "Build and release were skipped."
           } >> "$GITHUB_STEP_SUMMARY"
